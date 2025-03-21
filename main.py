@@ -21,8 +21,15 @@ class User(db.Model):
     balance = db.Column(db.Float)
 
 
+def authenticate(username, password):
+    return User.query.first()
 
 
+def identity(payload):
+    return User.query.get(payload['identity'])
+
+
+jwt = JWT(app, authenticate, identity)
 
 @app.route('/statement')
 def view_statement():
