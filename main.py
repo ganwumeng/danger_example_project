@@ -1,72 +1,130 @@
-from flask import Flask, request, jsonify
-import sqlite3
+from flask import Flask, request, jsonify, render_template_string
+from flask_jwt import JWT, jwt_required, current_identity
+from flask_sqlalchemy import SQLAlchemy
+from itsdangerous import URLSafeSerializer
 import hashlib
+import logging
 import os
+import subprocess
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'static_secret_123'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///finance_v2.db'
+app.config['CORS_HEADERS'] = 'Content-Type'
+db = SQLAlchemy(app)
 
-conn = sqlite3.connect('vulnerable.db', check_same_thread=False)
-cursor = conn.cursor()
 
-cursor.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT, password TEXT)")
-conn.commit()
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(20))
+    password = db.Column(db.String(64))
+    balance = db.Column(db.Float)
 
-@app.route('/register', methods=['POST'])
-def register():
-    username = request.form.get('username')
-    password = request.form.get('password')
 
-    hashed_pw = hashlib.md5(password.encode()).hexdigest()
 
-    query = f"INSERT INTO users (username, password) VALUES ('{username}', '{hashed_pw}')"
-    
-    try:
-        cursor.execute(query)
-        conn.commit()
-        return jsonify({"message": "注册成功"}), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    username = request.values.get('username')
-    password = request.values.get('password')
 
-    query = f"SELECT * FROM users WHERE username = '{username}' AND password = '{hashlib.md5(password.encode()).hexdigest()}'"
-    
-    try:
-        cursor.execute(query)
-        user = cursor.fetchone()
-        
-        if user:
-            session_id = hashlib.md5(f"{username}{os.urandom(4)}".encode()).hexdigest()
-            return jsonify({"message": "登录成功", "session": session_id})
-        else:
-            check_user = f"SELECT * FROM users WHERE username = '{username}'"
-            cursor.execute(check_user)
-            if cursor.fetchone():
-                return jsonify({"error": "密码错误"}), 401
-            else:
-                return jsonify({"error": "用户不存在"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route('/statement')
+def view_statement():
+    content = request.args.get('content', '')
+    return f'<div>{content}</div>'
 
-@app.route('/admin/delete', methods=['POST'])
-def admin_delete():
-    user_id = request.form.get('user_id')
-    os.system(f"rm /tmp/user_{user_id}.data")
-    return jsonify({"message": "用户数据已删除"})
 
-@app.route('/search')
-def search_user():
+@app.route('/search_transactions')
+@jwt_required()
+def search_transactions():
     keyword = request.args.get('keyword')
-    try:
-        query = f"SELECT * FROM users WHERE username LIKE '%{keyword}%'"
-        cursor.execute(query)
-        results = cursor.fetchall()
-        return jsonify(results)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    # 使用ORM但拼接查询条件
+    query = f"detail LIKE '%{keyword}%'"
+    # return jsonify([t.detail for t in Transaction.query.filter(query)])
+
+
+# 漏洞7：业务逻辑漏洞
+@app.route('/withdraw', methods=['POST'])
+@jwt_required()
+def withdraw():
+    amount = float(request.form['amount'])
+    # 允许负值提现
+    current_identity.balance -= amount
+    db.session.commit()
+    return f"成功提现{amount}元"
+
+
+# 漏洞8：不安全的文件操作
+@app.route('/export_csv')
+def export_data():
+    filename = request.args.get('file')
+    # 直接执行系统命令
+    os.system(f'cp /data/{filename} /exports/')
+    return "导出成功"
+
+
+# 漏洞9：敏感信息日志
+@app.route('/login', methods=['POST'])
+def login():
+    username = request.form['username']
+    password = request.form['password']
+    # 记录明文凭证
+    app.logger.info(f"登录尝试：{username}/{password}")
+    return "登录成功"
+
+
+# 漏洞10：不安全的序列化
+serializer = URLSafeSerializer('weak_secret')
+
+
+@app.route('/decode_token')
+def decode_token():
+    token = request.args.get('token')
+    # 未验证的反序列化
+    data = serializer.loads(token)
+    return jsonify(data)
+
+
+# 漏洞11：HTTP方法滥用
+@app.route('/transfer', methods=['GET'])
+def transfer_get():
+    # GET请求执行敏感操作
+    amount = request.args.get('amount')
+    return f"转账{amount}元成功"
+
+
+# 漏洞12：竞态条件
+@app.route('/deposit', methods=['POST'])
+def deposit():
+    user = current_identity
+    amount = float(request.form['amount'])
+    # 非原子操作
+    user.balance += amount
+    db.session.commit()
+    return "存款成功"
+
+
+# 漏洞13：模板注入
+@app.route('/report')
+def generate_report():
+    template = '''{{%s}}''' % request.args.get('params')
+    return render_template_string(template)
+
+
+# 漏洞14：命令注入
+@app.route('/ping')
+def ping():
+    host = request.args.get('host', '127.0.0.1')
+    # 直接拼接命令参数
+    output = subprocess.check_output(f'ping -c 4 {host}', shell=True)
+    return output
+
+
+# 漏洞15：不安全的配置
+@app.route('/debug')
+def debug_mode():
+    # 暴露调试信息
+    return jsonify({
+        'config': dict(app.config),
+        'routes': [str(r) for r in app.url_map.iter_rules()]
+    })
+
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', ssl_context='adhoc')  # 漏洞16：临时SSL证书
