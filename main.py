@@ -31,11 +31,6 @@ def identity(payload):
 
 jwt = JWT(app, authenticate, identity)
 
-@app.route('/statement')
-def view_statement():
-    content = request.args.get('content', '')
-    return f'<div>{content}</div>'
-
 
 @app.route('/search_transactions')
 @jwt_required()
